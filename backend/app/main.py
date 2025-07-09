@@ -51,7 +51,7 @@ async def upload_csv(file: UploadFile = File(...)):
         
         datadir = f"{tmpdir}\\Spotify Extended Streaming History"
     
-        full_df = None
+        df = None
         for datafilename in os.listdir(datadir):
             datafilepath = os.path.join(datadir, datafilename)
             
@@ -59,18 +59,24 @@ async def upload_csv(file: UploadFile = File(...)):
                 
             with open(datafilepath, "r", encoding="utf-8") as json_file:
                 data = json.load(json_file)
-                df = pd.DataFrame(data)
-                if full_df is None:
-                    full_df = df
+                df2 = pd.DataFrame(data)
+                if df is None:
+                    df = df2
                 else:
-                    full_df = pd.concat([full_df, df], ignore_index=True)
+                    df = pd.concat([df, df2], ignore_index=True)
     end_time = time.perf_counter()
     print("Time:", end_time - start_time)
 
     # Simplified assumption: the CSV has a "trackName" column
-    if "master_metadata_track_name" not in full_df.columns:
+    if "master_metadata_track_name" not in df.columns:
         return JSONResponse(status_code=400, content={"error": "Missing 'master_metadata_track_name' column in one of uploaded JSON files."})
 
-    top_tracks = full_df["master_metadata_track_name"].value_counts().head(10).to_dict()
+    print(df.columns)
+    df["s_played"] = (df["ms_played"] / 1000).round()
+    df["mins_played"] = (df["ms_played"] / 60000).round()
+    
+    top_tracks = df.groupby("master_metadata_track_name")["mins_played"].sum().reset_index()
+    top_tracks = top_tracks.sort_values(by="mins_played", ascending=False)
+    top_tracks = top_tracks.set_index('master_metadata_track_name')['mins_played'].head(10).to_dict()
 
     return {"top_tracks": top_tracks}
