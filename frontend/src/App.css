@@ -38,6 +38,157 @@
   color: var(--color-text-secondary);
 }
 
+.settings-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+  padding: 4px;
+}
+
+.settings-btn:hover {
+  opacity: 1;
+}
+
+/* ── Modal Settings ── */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-content {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lg);
+  border-radius: var(--radius-lg);
+  width: 400px;
+  display: flex;
+  flex-direction: column;
+  animation: slide-up 0.2s ease-out;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.modal-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  color: var(--color-text);
+}
+
+.modal-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.modal-desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-row label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.setting-input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+}
+
+.setting-input:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.setting-row--center {
+  align-items: center;
+}
+
+.operator-toggle {
+  display: flex;
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--color-border);
+}
+
+.operator-btn {
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.operator-btn.active {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  box-shadow: var(--shadow-sm);
+}
+
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ── Split Layout ── */
 .dashboard {
   display: flex;
@@ -215,16 +366,52 @@
   background: var(--color-surface-hover);
 }
 
-.stream-table .col-ts { width: 18%; }
-.stream-table .col-track { width: 25%; }
-.stream-table .col-album { width: 23%; }
-.stream-table .col-artist { width: 22%; }
-.stream-table .col-ms { width: 12%; text-align: right; }
+.stream-table .col-ts { width: 15%; }
+.stream-table .col-track { width: 20%; }
+.stream-table .col-album { width: 19%; }
+.stream-table .col-artist { width: 19%; }
+.stream-table .col-stream { width: 7%; text-align: center; }
+.stream-table .col-sec { width: 20%; text-align: right; }
 
 .stream-table td:last-child {
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
+}
+
+.playtime-container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.playtime-text {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.playtime-percent {
+  font-weight: 600;
+  color: var(--color-text);
+  margin-left: 2px;
+}
+
+.playtime-bar-bg {
+  width: 100px;
+  height: 4px;
+  background: var(--color-surface-raised);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.playtime-bar-fg {
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: 2px;
+  min-width: 2px;
+  transition: width 0.3s ease;
 }
 
 /* ── Pagination Bar ── */

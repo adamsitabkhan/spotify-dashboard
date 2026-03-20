@@ -30,6 +30,31 @@ CACHE_PATH = os.path.join(os.path.dirname(__file__), "spotify_cache.json")
 # Module-level DuckDB connection (in-memory)
 db_conn = duckdb.connect()
 
+def calc_streams(ms_played: float, duration_ms: float, min_sec: float, min_pct: float, operator: str) -> int:
+    if duration_ms is None or pd.isna(duration_ms) or duration_ms == 0:
+        duration_ms = 180000.0 
+
+    sec_played = ms_played / 1000.0
+    total_sec = duration_ms / 1000.0
+
+    full_streams = int(sec_played // total_sec)
+    remainder = sec_played % total_sec
+
+    pct = (remainder / total_sec) * 100
+    passes_sec = remainder >= min_sec
+    passes_pct = pct >= min_pct
+
+    if operator == "AND":
+        if passes_sec and passes_pct:
+            full_streams += 1
+    else:
+        if passes_sec or passes_pct:
+            full_streams += 1
+
+    return full_streams
+
+db_conn.create_function("calc_streams", calc_streams, [float, float, float, float, str], int)
+
 def load_cache() -> dict:
     if os.path.exists(CACHE_PATH):
         try:
@@ -199,8 +224,18 @@ async def upload_zip(file: UploadFile = File(...)):
     if df is None or "master_metadata_track_name" not in df.columns:
         return JSONResponse(status_code=400, content={"error": "Missing expected columns in uploaded data."})
 
-    # Prepare fields for DuckDB
     df["seconds_played"] = (df["ms_played"] / 1000.0).round(1)
+    
+    track_cache = load_cache().get("track_data", {})
+    def get_dur(uri):
+        if not isinstance(uri, str) or not uri.startswith("spotify:track:"): return None
+        return track_cache.get(uri.split(":")[-1], {}).get("duration_ms")
+    
+    df["duration_ms"] = df["spotify_track_uri"].apply(get_dur)
+    
+    max_played = df.groupby("spotify_track_uri")["ms_played"].max().clip(lower=60000.0, upper=600000.0)
+    df["duration_ms"] = df["duration_ms"].fillna(df["spotify_track_uri"].map(max_played))
+    df["duration_ms"] = df["duration_ms"].fillna(180000.0)
     
     # Register the dataframe and create a persistent DuckDB table
     db_conn.register("df_upload", df)
@@ -210,52 +245,43 @@ async def upload_zip(file: UploadFile = File(...)):
     # Get total streams count
     total_streams = db_conn.execute("SELECT COUNT(*) FROM streams").fetchone()[0]
 
-    # Pre-aggregate Top 100 Tracks
-    top_tracks_df = db_conn.execute("""
+    return {
+        "total_streams": total_streams,
+    }
+
+@app.get("/stats")
+def get_stats(min_sec: float = 30.0, min_pct: float = 50.0, operator: str = "OR"):
+    query = "SELECT SUM(calc_streams(ms_played, duration_ms, ?, ?, ?)) FROM streams"
+    total_streams = db_conn.execute(query, [min_sec, min_pct, operator]).fetchone()[0] or 0
+    return {"total_streams": int(total_streams)}
+
+@app.get("/top/tracks")
+async def get_top_tracks(page: int = 1, page_size: int = 25, metric: str = "Minutes", min_sec: float = 30.0, min_pct: float = 50.0, operator: str = "OR"):
+    offset = (page - 1) * page_size
+    order_col = "total_ms" if metric == "Minutes" else "stream_count"
+    
+    query = f"""
         SELECT 
             master_metadata_track_name as name, 
             SUM(ms_played) as total_ms, 
-            COUNT(ms_played) as stream_count,
+            CAST(SUM(calc_streams(ms_played, duration_ms, ?, ?, ?)) AS BIGINT) as stream_count,
             FIRST(spotify_track_uri ORDER BY ts DESC) as uri
         FROM streams
         WHERE master_metadata_track_name IS NOT NULL AND master_metadata_track_name != ''
         GROUP BY master_metadata_track_name
-        ORDER BY total_ms DESC
-        LIMIT 100
-    """).df()
-    top_tracks_list = top_tracks_df.to_dict(orient="records")
+        ORDER BY {order_col} DESC
+        LIMIT ? OFFSET ?
+    """
+    count_query = "SELECT COUNT(DISTINCT master_metadata_track_name) FROM streams WHERE master_metadata_track_name IS NOT NULL AND master_metadata_track_name != ''"
+    
+    total = db_conn.execute(count_query).fetchone()[0]
+    df = db_conn.execute(query, [min_sec, min_pct, operator, page_size, offset]).df()
+    tracks_list = df.to_dict(orient="records")
 
-    # Pre-aggregate Top 100 Albums
-    top_albums_list = db_conn.execute("""
-        SELECT 
-            master_metadata_album_album_name as name, 
-            SUM(ms_played) as total_ms, 
-            COUNT(ms_played) as stream_count
-        FROM streams
-        WHERE master_metadata_album_album_name IS NOT NULL AND master_metadata_album_album_name != ''
-        GROUP BY master_metadata_album_album_name
-        ORDER BY total_ms DESC
-        LIMIT 100
-    """).df().to_dict(orient="records")
+    uris = [t["uri"] for t in tracks_list if pd.notna(t["uri"])]
+    track_data_dict, album_images, artist_images = await fetch_spotify_data(uris)
 
-    # Pre-aggregate Top 100 Artists
-    top_artists_list = db_conn.execute("""
-        SELECT 
-            master_metadata_album_artist_name as name, 
-            SUM(ms_played) as total_ms, 
-            COUNT(ms_played) as stream_count
-        FROM streams
-        WHERE master_metadata_album_artist_name IS NOT NULL AND master_metadata_album_artist_name != ''
-        GROUP BY master_metadata_album_artist_name
-        ORDER BY total_ms DESC
-        LIMIT 100
-    """).df().to_dict(orient="records")
-
-    # Fetch Images & Durations
-    top_track_uris = [t["uri"] for t in top_tracks_list]
-    track_data_dict, album_images, artist_images = await fetch_spotify_data(top_track_uris)
-
-    for track in top_tracks_list:
+    for track in tracks_list:
         uri = track["uri"]
         if uri and isinstance(uri, str) and uri.startswith("spotify:track:"):
             track_id = uri.split(":")[-1]
@@ -266,18 +292,80 @@ async def upload_zip(file: UploadFile = File(...)):
             track["duration_ms"] = None
             track["image_url"] = None
 
-    for album in top_albums_list:
-        album["image_url"] = album_images.get(album["name"])
-        
-    for artist in top_artists_list:
-        artist["image_url"] = artist_images.get(artist["name"])
+    return {"rows": tracks_list, "total": total, "page": page, "page_size": page_size}
 
-    return {
-        "total_streams": total_streams,
-        "top_tracks": top_tracks_list,
-        "top_albums": top_albums_list,
-        "top_artists": top_artists_list,
-    }
+@app.get("/top/albums")
+async def get_top_albums(page: int = 1, page_size: int = 25, metric: str = "Minutes", min_sec: float = 30.0, min_pct: float = 50.0, operator: str = "OR"):
+    offset = (page - 1) * page_size
+    order_col = "total_ms" if metric == "Minutes" else "stream_count"
+    
+    query = f"""
+        SELECT 
+            master_metadata_album_album_name as name, 
+            SUM(ms_played) as total_ms, 
+            CAST(SUM(calc_streams(ms_played, duration_ms, ?, ?, ?)) AS BIGINT) as stream_count,
+            FIRST(spotify_track_uri ORDER BY ts DESC) as sample_uri
+        FROM streams
+        WHERE master_metadata_album_album_name IS NOT NULL AND master_metadata_album_album_name != ''
+        GROUP BY master_metadata_album_album_name
+        ORDER BY {order_col} DESC
+        LIMIT ? OFFSET ?
+    """
+    count_query = "SELECT COUNT(DISTINCT master_metadata_album_album_name) FROM streams WHERE master_metadata_album_album_name IS NOT NULL AND master_metadata_album_album_name != ''"
+    
+    total = db_conn.execute(count_query).fetchone()[0]
+    df = db_conn.execute(query, [min_sec, min_pct, operator, page_size, offset]).df()
+    albums_list = df.to_dict(orient="records")
+
+    uris = [a["sample_uri"] for a in albums_list if pd.notna(a["sample_uri"])]
+    track_data_dict, _, _ = await fetch_spotify_data(uris)
+
+    for album in albums_list:
+        sample_uri = album.get("sample_uri")
+        if sample_uri and isinstance(sample_uri, str) and sample_uri.startswith("spotify:track:"):
+            tid = sample_uri.split(":")[-1]
+            album["image_url"] = track_data_dict.get(tid, {}).get("image_url")
+        else:
+            album["image_url"] = None
+
+    return {"rows": albums_list, "total": total, "page": page, "page_size": page_size}
+
+@app.get("/top/artists")
+async def get_top_artists(page: int = 1, page_size: int = 25, metric: str = "Minutes", min_sec: float = 30.0, min_pct: float = 50.0, operator: str = "OR"):
+    offset = (page - 1) * page_size
+    order_col = "total_ms" if metric == "Minutes" else "stream_count"
+    
+    query = f"""
+        SELECT 
+            master_metadata_album_artist_name as name, 
+            SUM(ms_played) as total_ms, 
+            CAST(SUM(calc_streams(ms_played, duration_ms, ?, ?, ?)) AS BIGINT) as stream_count,
+            FIRST(spotify_track_uri ORDER BY ts DESC) as sample_uri
+        FROM streams
+        WHERE master_metadata_album_artist_name IS NOT NULL AND master_metadata_album_artist_name != ''
+        GROUP BY master_metadata_album_artist_name
+        ORDER BY {order_col} DESC
+        LIMIT ? OFFSET ?
+    """
+    count_query = "SELECT COUNT(DISTINCT master_metadata_album_artist_name) FROM streams WHERE master_metadata_album_artist_name IS NOT NULL AND master_metadata_album_artist_name != ''"
+    
+    total = db_conn.execute(count_query).fetchone()[0]
+    df = db_conn.execute(query, [min_sec, min_pct, operator, page_size, offset]).df()
+    artists_list = df.to_dict(orient="records")
+
+    uris = [a["sample_uri"] for a in artists_list if pd.notna(a["sample_uri"])]
+    track_data_dict, _, artist_images = await fetch_spotify_data(uris)
+
+    for artist in artists_list:
+        sample_uri = artist.get("sample_uri")
+        if sample_uri and isinstance(sample_uri, str) and sample_uri.startswith("spotify:track:"):
+            tid = sample_uri.split(":")[-1]
+            api_artist_name = track_data_dict.get(tid, {}).get("artist_name")
+            artist["image_url"] = artist_images.get(api_artist_name)
+        else:
+            artist["image_url"] = None
+
+    return {"rows": artists_list, "total": total, "page": page, "page_size": page_size}
 
 
 @app.get("/streams")
@@ -288,7 +376,10 @@ async def get_streams(
     artist: str = "",
     album: str = "",
     date: str = "",
-    min_seconds: float = 0.0
+    min_seconds: float = 0.0,
+    min_sec: float = 30.0, 
+    min_pct: float = 50.0, 
+    operator: str = "OR"
 ):
     offset = (page - 1) * page_size
     
@@ -323,16 +414,30 @@ async def get_streams(
             master_metadata_track_name as track_name,
             master_metadata_album_album_name as album_name,
             master_metadata_album_artist_name as artist_name,
-            seconds_played as seconds_played
+            seconds_played as seconds_played,
+            calc_streams(ms_played, duration_ms, ?, ?, ?) as computed_stream_count,
+            spotify_track_uri as uri
         FROM streams
         WHERE {where_clause}
         {order_clause}
         LIMIT ? OFFSET ?
     """
-    row_params = params + [page_size, offset]
+    row_params = [min_sec, min_pct, operator] + params + [page_size, offset]
     
     rows_df = db_conn.execute(select_query, row_params).df()
     rows = rows_df.fillna("").to_dict(orient="records")
+
+    uris = list(set([r["uri"] for r in rows if r["uri"]]))
+    track_data_dict, _, _ = await fetch_spotify_data(uris)
+    
+    for r in rows:
+        uri = r.get("uri")
+        if uri and isinstance(uri, str) and uri.startswith("spotify:track:"):
+            tid = uri.split(":")[-1]
+            tdata = track_data_dict.get(tid, {})
+            r["duration_ms"] = tdata.get("duration_ms")
+        else:
+            r["duration_ms"] = None
 
     return {
         "rows": rows,

@@ -31,13 +31,13 @@ function useDebounce(value, delay) {
     return debouncedValue;
 }
 
-function StreamTable({ totalStreams: initialTotal }) {
+function StreamTable({ minSec, minPct, operator }) {
     // UI State
     const [filtersOpen, setFiltersOpen] = useState(false);
     
     // API State
     const [rows, setRows] = useState([]);
-    const [total, setTotal] = useState(initialTotal);
+    const [total, setTotal] = useState(0); // initialTotal removed, default to 0
     const [loading, setLoading] = useState(false);
 
     // Query State
@@ -71,6 +71,9 @@ function StreamTable({ totalStreams: initialTotal }) {
         if (debouncedAlbum) url.searchParams.set("album", debouncedAlbum);
         if (debouncedDate) url.searchParams.set("date", debouncedDate);
         if (debouncedMinSecs > 0) url.searchParams.set("min_seconds", debouncedMinSecs);
+        url.searchParams.set("min_sec", minSec);
+        url.searchParams.set("min_pct", minPct);
+        url.searchParams.set("operator", operator);
 
         let active = true;
         setLoading(true);
@@ -90,7 +93,7 @@ function StreamTable({ totalStreams: initialTotal }) {
             });
 
         return () => { active = false; };
-    }, [page, pageSize, sortAsc, debouncedArtist, debouncedAlbum, debouncedDate, debouncedMinSecs]);
+    }, [page, pageSize, sortAsc, debouncedArtist, debouncedAlbum, debouncedDate, debouncedMinSecs, minSec, minPct, operator]);
 
     const toggleSort = useCallback(() => setSortAsc(v => !v), []);
     
@@ -180,6 +183,7 @@ function StreamTable({ totalStreams: initialTotal }) {
                             <th className="col-track">Song Title</th>
                             <th className="col-album">Album</th>
                             <th className="col-artist">Artist</th>
+                            <th className="col-stream">Stream</th>
                             <th className="col-sec">Playtime</th>
                         </tr>
                     </thead>
@@ -191,15 +195,40 @@ function StreamTable({ totalStreams: initialTotal }) {
                                 </td>
                             </tr>
                         )}
-                        {rows.map((s, i) => (
-                            <tr key={i}>
-                                <td className="col-ts" title={s.ts}>{formatTimestamp(s.ts)}</td>
-                                <td title={s.track_name}>{s.track_name || "—"}</td>
-                                <td title={s.album_name}>{s.album_name || "—"}</td>
-                                <td title={s.artist_name}>{s.artist_name || "—"}</td>
-                                <td>{formatPlaytime(s.seconds_played)}</td>
-                            </tr>
-                        ))}
+                        {rows.map((s, i) => {
+                            const playedSec = s.seconds_played;
+                            const totalSec = s.duration_ms ? s.duration_ms / 1000 : null;
+                            const percentage = totalSec ? (playedSec / totalSec) * 100 : null;
+                            const clampedPercentage = percentage ? Math.min(100, percentage) : 0;
+                            
+                            return (
+                                <tr key={i}>
+                                    <td className="col-ts" title={s.ts}>{formatTimestamp(s.ts)}</td>
+                                    <td title={s.track_name}>{s.track_name || "—"}</td>
+                                    <td title={s.album_name}>{s.album_name || "—"}</td>
+                                    <td title={s.artist_name}>{s.artist_name || "—"}</td>
+                                    <td style={{ textAlign: "center" }}>
+                                        {s.computed_stream_count >= 1 ? (
+                                            <span style={{ color: "var(--color-accent)", fontWeight: "bold", fontSize: "14px" }}>✓</span>
+                                        ) : ""}
+                                    </td>
+                                    <td>
+                                        {totalSec ? (
+                                            <div className="playtime-container">
+                                                <div className="playtime-text">
+                                                    {formatPlaytime(playedSec)} / {formatPlaytime(totalSec)} <span className="playtime-percent">({Math.round(percentage)}%)</span>
+                                                </div>
+                                                <div className="playtime-bar-bg">
+                                                    <div className="playtime-bar-fg" style={{ width: `${clampedPercentage}%` }} />
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            formatPlaytime(playedSec)
+                                        )}
+                                    </td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
